@@ -1,3 +1,4 @@
+// 1. 选择所有 data-parentid="" 的题目元素
 const questions = document.querySelectorAll('.kques-item[data-parentid=""]');
 
 // 2. 初始化一个字符串来存储所有题目和对应的正确答案
