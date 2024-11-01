@@ -1,0 +1,16 @@
+[
+    {
+        "account": "4B1g0026",
+        "password": "Giam20040812",
+        "course_id": "26849",
+        "answer_time": 0.2,
+        "target_score": 60
+    },
+    {
+        "account": "4b1g0026",
+        "password": "Giam20040812",
+        "course_id": "26885",
+        "answer_time": 0.1,
+        "target_score": 80
+    }
+]

@@ -3,15 +3,16 @@ from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
-from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException  # 添加這個導入
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
 import os
 import json
-
+import traceback
 
 class FlipclassExamBot:
-    def __init__(self, account, password, course_id, answer_time, target_score):
+    def __init__(self, account, password, course_id, answer_time, target_score, print_callback=None):
         self.account = account
         self.password = password
         self.course_id = course_id
@@ -19,189 +20,264 @@ class FlipclassExamBot:
         self.target_score = target_score
         self.driver = None
         self.wait = None
-        self.answer_page_url = None  # 保存答案頁面的 URL
-        self.exam_page_url = None    # 保存考試頁面的 URL
+        self.answer_page_url = None
+        self.exam_page_url = None
+        self.print_callback = print_callback
+
+    def print_message(self, message, level='INFO'):
+        """統一的消息輸出函數"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        formatted_message = f"[{level.upper()}] {message}"
+        if self.print_callback:
+            self.print_callback(message, level)  # 直接傳遞原始消息和級別
+        else:
+            print(formatted_message)
 
     def setup_browser(self):
-        # 設定 Chrome 瀏覽器選項（無頭模式和隱藏特徵）
-        options = Options()
-        #options.add_argument("profile-directory=Default")
-        options.add_argument("--headless")  # 啟用無頭模式
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        # 如果需要偽裝用戶代理，可以取消下面的註解並設置適當的用戶代理
-        # options.add_argument("user-agent=您的用戶代理字串")
-        service = Service(log_path=os.devnull)
-        self.driver = webdriver.Chrome(service=service, options=options)
-        self.wait = WebDriverWait(self.driver, 20)
+        try:
+            self.print_message("開始設置瀏覽器...", "DEBUG")
+            options = Options()
+            options.add_argument("--headless")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            
+            service = Service(log_path=os.devnull)
+            self.driver = webdriver.Chrome(service=service, options=options)
+            self.wait = WebDriverWait(self.driver, 20)
+            self.print_message("瀏覽器設置完成", "SUCCESS")
+        except Exception as e:
+            self.print_message(f"設置瀏覽器時發生錯誤: {str(e)}", "ERROR")
+            raise
 
     def login(self):
-        # 打開登入頁面並進行登入操作
+        self.print_message("開始登入程序", "INFO")
         self.driver.get("https://flipclass.stust.edu.tw/")
         try:
-            # 定位帳號和密碼輸入框，並輸入用戶信息
+            self.print_message("等待登入頁面加載...", "DEBUG")
             account_input = self.wait.until(EC.visibility_of_element_located((By.NAME, "account")))
             account_input.clear()
             account_input.send_keys(self.account)
+            self.print_message(f"已輸入帳號: {self.account}", "DEBUG")
 
             password_input = self.wait.until(EC.visibility_of_element_located((By.NAME, "password")))
             password_input.clear()
             password_input.send_keys(self.password)
+            self.print_message("已輸入密碼", "DEBUG")
 
-            # 點擊登入按鈕
-            login_button = self.wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@type='submit' and @data-role='form-submit']")))
-            login_button.click()
-
-            # 檢查是否出現“保持登入”提示
-            self.handle_keep_login()
-
-            # 等待登入成功
-            self.wait.until(EC.visibility_of_element_located(
-                (By.XPATH, "//div[@class='caption underline' and text()='最近事件']")
+            login_button = self.wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//button[@type='submit' and @data-role='form-submit']")
             ))
-            print("登入成功！")
-            return True
+            login_button.click()
+            self.print_message("已點擊登入按鈕", "DEBUG")
+
+            # 創建一個3秒的短等待時間
+            short_wait = WebDriverWait(self.driver, 3)
+
+            try:
+                # 優先檢查保持登入按鈕
+                keep_login_button = short_wait.until(
+                    EC.element_to_be_clickable((By.CLASS_NAME, "keepLoginBtn"))
+                )
+                self.handle_keep_login()
+                self.wait.until(EC.visibility_of_element_located(
+                    (By.XPATH, "//div[@class='caption underline' and text()='最近事件']")
+                ))
+                self.print_message("登入成功！", "SUCCESS")
+                return True
+            except TimeoutException:
+                # 如果沒有找到保持登入按鈕，檢查是否有錯誤訊息
+                try:
+                    error_message = short_wait.until(
+                        EC.presence_of_element_located((By.CLASS_NAME, "fs-form-message"))
+                    )
+                    if error_message.is_displayed():
+                        self.print_message("登入失敗：檢測到錯誤訊息", "ERROR")
+                        return False
+                except TimeoutException:
+                    self.print_message("登入失敗：未能檢測到登入狀態", "ERROR")
+                    return False
+
         except Exception as e:
-            print("登入時發生錯誤:", e)
+            self.print_message(f"登入過程中發生錯誤: {str(e)}", "ERROR")
             return False
 
     def handle_keep_login(self):
-        # 檢查是否出現帳號已在其他位置登入的提示
         try:
             keep_login_button = self.wait.until(EC.element_to_be_clickable((By.CLASS_NAME, "keepLoginBtn")))
             keep_login_button.click()
-            print("選擇保持登入。")
+            self.print_message("已選擇保持登入", "SUCCESS")
         except:
-            print("未檢測到保持登入提示。")
+            self.print_message("未檢測到保持登入提示", "DEBUG")
 
     def navigate_to_course(self):
-        # 導航到指定課程頁面
         course_url = f"https://flipclass.stust.edu.tw/course/exam/{self.course_id}"
+        self.print_message(f"正在導航到課程頁面: {course_url}", "INFO")
         self.driver.get(course_url)
-        print(f"已進入課程頁面：{course_url}")
+        self.print_message("已進入課程頁面", "SUCCESS")
 
-        # 注入防切窗的保持焦點 JavaScript
         keep_focus_script = "window.onblur = function() { window.focus(); };"
         self.driver.execute_script(keep_focus_script)
-
-    def extract_exam_and_answer_urls(self):
-        try:
-            # 提取“開始測驗”或“繼續測驗”按鈕的 URL
-            element = self.wait.until(EC.element_to_be_clickable((By.XPATH, "//a[span[text()='開始測驗' or text()='繼續測驗']]")))
-            href = element.get_attribute('href')
-            self.exam_page_url = urljoin(self.driver.current_url, href)  # 將考試頁面設為 exam_page_url
-            print("考試按鈕鏈接（原始）：", self.exam_page_url)
-
-            # 獲取答案頁面 URL
-            self.answer_page_url = self.modify_url(self.exam_page_url)
-            print("答案頁面鏈接：", self.answer_page_url)
-            return True
-        except Exception as e:
-            print("提取考試和答案 URL 時發生錯誤:", e)
-            return False
+        self.print_message("已注入防切窗腳本", "DEBUG")
 
     def modify_url(self, url):
-        # 解析並修改鏈接
         url_parts = urlparse(url)
         query_params = parse_qs(url_parts.query)
-
-        # 保留 'key' 和 'title' 參數，刪除其他參數，並添加 'mode=view'
         query_params = {key: query_params[key] for key in query_params if key in ['key', 'title']}
         query_params['mode'] = 'view'
-
-        # 重組 URL
         new_query = urlencode(query_params, doseq=True)
         return urlunparse((url_parts.scheme, url_parts.netloc, url_parts.path, url_parts.params, new_query, url_parts.fragment))
 
+    def extract_exam_and_answer_urls(self):
+        try:
+            self.print_message("開始提取考試和答案頁面URL", "INFO")
+            element = self.wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//a[span[text()='開始測驗' or text()='繼續測驗']]")
+            ))
+            href = element.get_attribute('href')
+            self.exam_page_url = urljoin(self.driver.current_url, href)
+            self.print_message(f"已獲取考試頁面URL", "DEBUG")
+
+            self.answer_page_url = self.modify_url(self.exam_page_url)
+            self.print_message(f"已生成答案頁面", "DEBUG")
+            return True
+        except Exception as e:
+            self.print_message(f"提取URL時發生錯誤: {str(e)}", "ERROR")
+            return False
+
     def load_exam_page(self):
-        # 回到考試頁面，使用 self.exam_page_url
         if self.exam_page_url:
+            self.print_message("正在加載考試頁面...", "INFO")
             self.driver.get(self.exam_page_url)
-            print("已返回考試頁面：", self.exam_page_url)
+            
+            # 等待考試頁面關鍵元素加載完成
+            try:
+                self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
+                
+                # 注入防切窗腳本
+                keep_focus_script = """
+                window.onblur = function() { 
+                    window.focus(); 
+                    return true;
+                };
+                window.onfocus = function() {
+                    return true;
+                };
+                // 攔截 visibilitychange 事件
+                document.addEventListener('visibilitychange', function(e) {
+                    e.preventDefault();
+                    document.hidden = false;
+                    return true;
+                });
+                // 確保窗口始終保持焦點
+                setInterval(function() {
+                    window.focus();
+                }, 100);
+                """
+                self.driver.execute_script(keep_focus_script)
+                self.print_message("已注入防切窗腳本", "DEBUG")
+                
+                # 驗證腳本是否成功注入
+                validation_result = self.driver.execute_script("""
+                    return {
+                        hasOnBlur: typeof window.onblur === 'function',
+                        hasOnFocus: typeof window.onfocus === 'function'
+                    };
+                """)
+                
+                if validation_result['hasOnBlur'] and validation_result['hasOnFocus']:
+                    self.print_message("防切窗腳本驗證成功", "SUCCESS")
+                else:
+                    self.print_message("防切窗腳本可能未正確注入", "WARNING")
+                
+                self.print_message("已成功加載考試頁面", "SUCCESS")
+                
+            except Exception as e:
+                self.print_message(f"加載考試頁面時發生錯誤: {str(e)}", "ERROR")
+                raise
+                
         else:
-            print("無法導航到考試頁面，exam_page_url 未定義。")
+            self.print_message("無法加載考試頁面：URL未定義", "ERROR")
 
     def extract_answers(self):
         try:
-            # 讀取並執行 extract_answers.js 文件來提取答案
-            js_file_path = "E:/JavaScript/Flipclass tool/extract_answers.js"
+            self.print_message("開始提取答案...", "INFO")
+            js_file_path = "extract_answers.js"
             with open(js_file_path, "r", encoding="utf-8") as js_file:
                 js_script = js_file.read()
                 result = self.driver.execute_script(js_script)
-                print("提取的答案數據:\n", result)
+                if result:
+                    self.print_message("答案提取成功", "SUCCESS")
+                else:
+                    self.print_message("未能提取到答案", "WARNING")
                 return result
         except Exception as e:
-            print("提取答案時發生錯誤:", e)
+            self.print_message(f"提取答案時發生錯誤: {str(e)}", "ERROR")
             return None
 
     def wait_before_submit(self):
-        """等待指定的作答時間，每5秒更新一次倒計時"""
-        # 將分鐘轉換為秒，使用 round 確保精確度
         total_seconds = round(self.answer_time * 60)
-        print(f"\n開始等待作答時間: {self.answer_time:.1f}分鐘")
+        self.print_message(f"開始等待作答時間: {self.answer_time:.1f}分鐘", "INFO")
         
-        # 每5秒更新一次倒計時
         for remaining in range(total_seconds, 0, -5):
             minutes = remaining // 60
             seconds = remaining % 60
             
-            # 如果剩餘時間小於1分鐘，顯示更詳細的格式
             if remaining < 60:
-                time_str = f"\r剩餘時間: {seconds}秒"
+                time_str = f"剩餘時間: {seconds}秒"
             else:
-                # 對於超過1分鐘的時間，顯示分和秒
-                time_str = f"\r剩餘時間: {minutes:02d}分{seconds:02d}秒"
+                time_str = f"剩餘時間: {minutes:02d}分{seconds:02d}秒"
             
-            # 在最後30秒時添加提醒
             if remaining <= 30:
                 time_str += " (即將結束!)"
+                level = "WARNING"
+            else:
+                level = "INFO"
             
-            print(time_str, end='', flush=True)
-            time.sleep(min(5, remaining))  # 確保最後一次等待不會超過剩餘時間
-            
-        print("\n作答時間結束，準備提交...")
+            self.print_message(time_str, level)
+            time.sleep(min(5, remaining))
+        
+        self.print_message("作答時間結束，準備提交...", "INFO")
 
     def fill_answers_and_submit(self, answers):
         try:
-            # 使用實例變量 self.target_score
-            js_file_path = "E:/JavaScript/Flipclass tool/fill_answers.js"
+            self.print_message("開始填充答案...", "INFO")
+            js_file_path = "fill_answers.js"
             with open(js_file_path, "r", encoding="utf-8") as js_file:
                 fill_script = js_file.read()
 
-            # 使用實例的目標分數
             self.driver.execute_script(fill_script, answers, self.target_score)
-            print(f"所有答案已成功填充！目標分數：{self.target_score}")
+            self.print_message(f"答案填充完成，目標分數：{self.target_score}", "SUCCESS")
 
-            # 等待指定的作答時間
             self.wait_before_submit()
 
-            # 點擊"交卷"按鈕
+            self.print_message("正在點擊提交按鈕...", "INFO")
             submit_button = self.wait.until(EC.element_to_be_clickable(
                 (By.XPATH, "//div[@class='tool-submit']//button[@role='submit-exam']")
             ))
             submit_button.click()
-            print("已點擊交卷按鈕。")
+            self.print_message("已點擊提交按鈕", "SUCCESS")
 
-            # 處理彈出的確認交卷對話框
             confirm_button = self.wait.until(EC.element_to_be_clickable(
                 (By.XPATH, "//button[@data-bb-handler='confirm' and text()='交卷']")
             ))
             confirm_button.click()
-            print("已確認交卷。")
+            self.print_message("已確認提交", "SUCCESS")
 
         except Exception as e:
-            print("填充答案或交卷時發生錯誤:", e)
-
-
+            self.print_message(f"填充答案或提交時發生錯誤: {str(e)}", "ERROR")
+            raise
 
     def get_score(self):
         try:
-            # 等待分数元素出现
+            self.print_message("正在獲取分數...", "INFO")
+            
+            # 等待分數元素出現
             self.wait.until(EC.visibility_of_element_located(
                 (By.XPATH, "//div[@class='infobar']//div[@class='score']//span[contains(@class, 'recordScore')]")
             ))
-            # 查找分数和满分元素
+            
+            # 查找分數和滿分元素
             score_element = self.driver.find_element(
                 By.XPATH, "//div[@class='infobar']//div[@class='score']//span[contains(@class, 'recordScore')]"
             )
@@ -209,86 +285,76 @@ class FlipclassExamBot:
                 By.XPATH, "//div[@class='infobar']//div[@class='score']//span[@class='fullmark']"
             )
 
-            # 获取文本内容
+            # 獲取文本內容
             score = score_element.text.strip()
             fullmark = fullmark_element.text.strip()
-            print(f"您的得分是: {score} {fullmark}")
+            
+            self.print_message(f"最終得分：{score} {fullmark}", "SUCCESS")
+            return score, fullmark
         except Exception as e:
-            print("提取分数时发生错误:", e)
-            import traceback
+            self.print_message(f"獲取分數時發生錯誤: {str(e)}", "ERROR")
             traceback.print_exc()
+            return None, None
 
     def run(self):
-        self.setup_browser()
-        if not self.login():
-            print("登入失败，停止执行。")
-            self.driver.quit()
-            return
-
-        self.navigate_to_course()
-        if not self.extract_exam_and_answer_urls():
-            print("无法提取测验或答案页面 URL。")
-            self.driver.quit()
-            return
-
-        # 进入答案页面
-        self.driver.get(self.answer_page_url)
-        print("已进入答案页面：", self.answer_page_url)
-
-        # 等待答案页面加载完成
         try:
-            self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
-        except Exception as e:
-            print("答案页面加载超时:", e)
-            self.driver.quit()
-            return
+            self.print_message("開始執行自動化流程", "INFO")
+            self.setup_browser()
+            
+            if not self.login():
+                self.print_message("登入失敗，停止執行", "ERROR")
+                return False
 
-        # 提取答案
-        answers = self.extract_answers()
+            self.navigate_to_course()
+            
+            if not self.extract_exam_and_answer_urls():
+                self.print_message("無法提取測驗URL，停止執行", "ERROR")
+                return False
 
-        # 回到考试页面
-        self.load_exam_page()
+            # 進入答案頁面
+            self.driver.get(self.answer_page_url)
+            self.print_message("已進入答案頁面", "SUCCESS")
 
-        # 等待考试页面加载完成
-        try:
-            self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
-        except Exception as e:
-            print("考试页面加载超时:", e)
-            self.driver.quit()
-            return
+            # 等待答案頁面加載
+            try:
+                self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
+            except Exception as e:
+                self.print_message("答案頁面加載超時", "ERROR")
+                return False
 
-        # 填充答案并提交
-        if answers:
+            # 提取答案
+            answers = self.extract_answers()
+            if not answers:
+                self.print_message("未能提取答案，停止執行", "ERROR")
+                return False
+
+            # 回到考試頁面
+            self.load_exam_page()
+
+            # 等待考試頁面加載
+            try:
+                self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
+            except Exception as e:
+                self.print_message("考試頁面加載超時", "ERROR")
+                return False
+
+            # 填充答案並提交
             self.fill_answers_and_submit(answers)
-        else:
-            print("未能提取答案，请检查错误。")
-            self.driver.quit()
-            return
 
-        # 等待提交后页面加载完成
-        try:
-            # 等待包含分数的元素出现
-            self.wait.until(EC.visibility_of_element_located(
-                (By.XPATH, "//div[@class='infobar']")
-            ))
-            # 提取并显示分数
-            self.get_score()
+            # 獲取分數
+            score, fullmark = self.get_score()
+            
+            self.print_message("自動化流程執行完成", "SUCCESS")
+            return True
+
         except Exception as e:
-            print("分数页面加载超时或提取分数时发生错误:", e)
-            import traceback
+            self.print_message(f"執行過程中發生錯誤: {str(e)}", "ERROR")
             traceback.print_exc()
-
-        # 自动结束浏览器
-        self.driver.quit()
-
-    def keep_browser_open(self):
-        # 保持瀏覽器打開（如果需要）
-        try:
-            while True:
-                time.sleep(10)
-        except KeyboardInterrupt:
-            print("結束程式。")
-            self.driver.quit()
+            return False
+        finally:
+            if self.driver:
+                self.driver.quit()
+                self.print_message("已關閉瀏覽器", "INFO")
 
 def validate_account(account):
     """驗證帳號是否為8個字元"""
@@ -362,16 +428,3 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"程序執行時發生錯誤: {e}")
         input("按Enter鍵結束程序...")
-
-'''
-# 主程式執行
-if __name__ == "__main__":
-    account = "4b1g0162"
-    password = "MYworldcow03"
-    course_id = "26885"
-    # 創建並運行自動化實例
-    automation = FlipclassExamBot(account, password, course_id)
-    automation.run()
-    # 如果需要保持瀏覽器打開，取消下面的註解
-    # automation.keep_browser_open()'''
-
