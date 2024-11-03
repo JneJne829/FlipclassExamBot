@@ -20,55 +20,46 @@ document.querySelectorAll('.explaination').forEach(explaination => {
 
 console.log('所有 .explaination 元素已被刪除');
 
-// 預設倒數時間（以分鐘計）
-// 將此設置為 0 或者其他正整數以進行預設
-let countdownTime = 10; // 預設為 0，表示需要用戶輸入時間
+// 啟動計時器功能
+function startCountdown() {
+    let countdownTime = 10; // 預設 10 分鐘
+    countdownTime = parseInt(prompt("請輸入要倒數的時間（分鐘）：", countdownTime), 10);
 
-// 如果預設的時間為 0 或無效，則提示用戶輸入
-if (isNaN(countdownTime) || countdownTime <= 0) {
-    countdownTime = parseInt(prompt("請輸入要倒數的時間（分鐘）："), 10);
-}
-
-// 檢查輸入是否為有效的數字
-if (!isNaN(countdownTime) && countdownTime > 0) {
-    countdownTime *= 60; // 將分鐘轉換為秒數
-
-    // 定義倒數計時功能
-    function startCountdown() {
-        const timerElement = document.querySelector('.tool-timer .timer');
-    
-        if (timerElement) {
-            const interval = setInterval(() => {
-                if (countdownTime > 0) {
-                    const hours = Math.floor(countdownTime / 3600);
-                    const minutes = Math.floor((countdownTime % 3600) / 60);
-                    const seconds = countdownTime % 60;
-    
-                    timerElement.textContent = 
-                        `${hours.toString().padStart(2, '0')}:` +
-                        `${minutes.toString().padStart(2, '0')}:` +
-                        `${seconds.toString().padStart(2, '0')}`;
-    
-                    console.log(`更新時間: ${timerElement.textContent}`); // 確認是否正在更新
-                    countdownTime--;
-                } else {
-                    clearInterval(interval);
-                    timerElement.textContent = '時間到！';
-                    alert('時間到！');
-                }
-            }, 1000);
-        } else {
-            console.error("找不到 .tool-timer .timer 元素，請確認 DOM 結構是否正確。");
-        }
+    if (isNaN(countdownTime) || countdownTime <= 0) {
+        alert("請輸入有效的時間（正整數）。");
+        return;
     }
-    
 
-    // 等待 DOM 加載完成後執行
-    document.addEventListener("DOMContentLoaded", () => {
-        startCountdown();
-    });
-} else {
-    alert("請輸入有效的時間（正整數）。");
+    let totalSeconds = countdownTime * 60;
+    const timerElement = document.querySelector('.tool-timer .timer');
+    
+    if (!timerElement) {
+        console.error("找不到計時器元素");
+        return;
+    }
+
+    const interval = setInterval(() => {
+        if (totalSeconds > 0) {
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const seconds = totalSeconds % 60;
+
+            timerElement.textContent = 
+                `${hours.toString().padStart(2, '0')}:` +
+                `${minutes.toString().padStart(2, '0')}:` +
+                `${seconds.toString().padStart(2, '0')}`;
+
+            totalSeconds--;
+        } else {
+            clearInterval(interval);
+            timerElement.textContent = '時間到！';
+            showCustomConfirm("時間到！確定要交卷?", function(result) {
+                if (result) {
+                    closePage();
+                }
+            });
+        }
+    }, 1000);
 }
 
 // 創建工具欄
@@ -122,7 +113,7 @@ function createFixedToolbar() {
         <div class="tool-submit">
             <button type="button" class="btn btn-primary" role="submit-exam">交卷</button>
         </div>
-        <div class="tool-timer hidden">
+        <div class="tool-timer">
             <i class="glyphicon glyphicon-time"></i> <span class="timer">00:00:00</span>
         </div>
     `;
@@ -401,9 +392,30 @@ function preventPreviewMode() {
     document.removeEventListener('fs.kexam.preview', function(){}, true);
 }
 
+// 清空所有答案
+function clearAllAnswers() {
+    // 清空選擇題答案
+    const radioInputs = document.querySelectorAll('.kques-item input[type="radio"], .kques-item input[type="checkbox"]');
+    radioInputs.forEach(input => {
+        input.checked = false;
+    });
+
+    // 清空填空題答案
+    const textInputs = document.querySelectorAll('.kques-item input[type="text"], .kques-item textarea');
+    textInputs.forEach(input => {
+        input.value = '';
+    });
+
+    // 更新已答題數量
+    updateAnsweredCount();
+    
+    console.log('所有答案已清空');
+}
+
 // 初始化整個考試系統
 function initializeExamSystem() {
     removePropertyElements();
+    clearAllAnswers();
     createFixedToolbar();
     enableExamFunction();
     preventPreviewMode();
@@ -435,6 +447,9 @@ function initializeExamSystem() {
         }
     `;
     document.head.appendChild(modalStyle);
+
+    // 啟動計時器
+    startCountdown();
 }
 
 // 執行初始化
