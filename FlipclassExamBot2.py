@@ -140,7 +140,7 @@ class FlipclassExamBot:
             href = element.get_attribute('href')
             if not self.analyze_exam_url(href):
                 self.print_message(f"按鈕指向的URL無效", "ERROR")
-                return False
+                return False 
 
             element.click()
             
