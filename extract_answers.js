@@ -1,44 +1,52 @@
-// 1. 选择所有 data-parentid="" 的题目元素
-const questions = document.querySelectorAll('.kques-item[data-parentid=""]');
+// 1. 選擇所有題目元素
+const questions = document.querySelectorAll('.kques-item');
 
-// 2. 初始化一个字符串来存储所有题目和对应的正确答案
+// 2. 初始化一個字符串來存储所有題目和對應的正確答案
 let output = "";
 
-// 3. 遍历每个题目元素并找到已选择的正确答案
+// 3. 遍歷每個題目元素並找到已選擇的正確答案
 questions.forEach((question) => {
-    // 获取题目的类型属性，以区分选择题和填空题
+    // 獲取題目的類型屬性，以區分選擇題和填空題 
     const questionType = question.getAttribute('type');
     
-    // 获取题目的 data-id
+    // 獲取題目的 data-id
     const dataId = question.getAttribute('data-id');
 
-    if (questionType === '1') {  // 选择题（单选或多选）
-        // 判断是多选题（checkbox）还是单选题（radio）
+    if (questionType === '0') {  // 是非題
+        const selectedOption = question.querySelector('input[type="radio"][checked]');
+        if (selectedOption) {
+            const answerText = selectedOption.closest('label').querySelector('.option').textContent.trim();
+            output += `${dataId} - ${answerText}\n`;
+        } else {
+            output += `${dataId} - 未作答\n`;
+        }
+    } else if (questionType === '1') {  // 選擇題（單選或多選）
+        // 判斷是多選題（checkbox）還是單選題（radio）
         const isMultipleChoice = question.querySelector('input[type="checkbox"]') !== null;
         
-        // 根据类型收集已选择的选项
+        // 根據類型收集已選擇的選項
         const selectedOptions = isMultipleChoice
             ? Array.from(question.querySelectorAll('input[type="checkbox"][checked]'))
             : Array.from(question.querySelectorAll('input[type="radio"][checked]'));
         
-        // 构建答案文本，移除前缀（例如 "A. ", "B. "）
+        // 構建答案文本，移除前綴（例如 "A. ", "B. "）
         const answerTexts = selectedOptions
             .map(option => {
                 let text = option.closest('label').textContent.trim();
                 return text.replace(/^[A-Z]\.\s*/, ''); // 移除 "A.", "B." 等
             })
-            .join(', ');
-        output += `${dataId} - ${answerTexts || "No correct answer found"}\n`;
+            .join('、');
+        output += `${dataId} - ${answerTexts || "未作答"}\n`;
 
-    } else if (questionType === '2') {  // 填空题
-        // 从 gap-preview spans 中收集所有填空答案
+    } else if (questionType === '2') {  // 填空題
+        // 從 gap-preview spans 中收集所有填空答案
         const blankAnswers = Array.from(question.querySelectorAll('span.gap-preview'))
             .map(blank => blank.textContent.trim())
-            .join(', ');
-        output += `${dataId} - ${blankAnswers || "No answers provided"}\n`;
+            .join('、');
+        output += `${dataId} - ${blankAnswers || "未作答"}\n`;
     }
 });
 
-// 4. 一次性输出所有题目和答案
+// 4. 一次性輸出所有題目和答案
 console.log(output);
-return output;  // 确保输出被返回到 Selenium
+return output;  // 確保輸出被返回到 Selenium

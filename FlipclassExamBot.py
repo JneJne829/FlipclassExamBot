@@ -6,18 +6,20 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException  # 添加這個導入
+from selenium.common.exceptions import NoSuchElementException
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse, urljoin
 import os
 import json
 import traceback
 
 class FlipclassExamBot:
-    def __init__(self, account, password, course_id, answer_time, target_score, headless=True, print_callback=None):
+    def __init__(self, account, password, course_id, answer_time, target_score, exam_code = None, headless=True, print_callback=None):
         self.account = account
         self.password = password
         self.course_id = course_id
         self.answer_time = float(answer_time)
         self.target_score = target_score
+        self.exam_code = exam_code
         self.headless = headless
         self.driver = None
         self.wait = None
@@ -130,7 +132,61 @@ class FlipclassExamBot:
         new_query = urlencode(query_params, doseq=True)
         return urlunparse((url_parts.scheme, url_parts.netloc, url_parts.path, url_parts.params, new_query, url_parts.fragment))
 
-    def extract_exam_and_answer_urls(self):
+    from selenium.common.exceptions import NoSuchElementException
+
+    def extract_exam_and_answer_urls_with_exam_code(self):
+        try:
+            self.print_message("開始提取考試和答案頁面URL", "INFO")
+            element = self.wait.until(EC.element_to_be_clickable(
+                (By.XPATH, "//a[span[text()='開始測驗' or text()='繼續測驗']]")
+            ))
+            href = element.get_attribute('href')
+            
+            if not self.analyze_exam_url(href):
+                element.click()
+                passcode_input = self.wait.until(EC.presence_of_element_located(
+                    (By.NAME, "passcode")
+                ))
+                passcode_input.send_keys(self.exam_code)
+                
+                submit_button = self.wait.until(EC.element_to_be_clickable(
+                    (By.XPATH, "//button[@type='submit' and @data-role='form-submit']")
+                ))
+                submit_button.click()
+                
+                start_time = time.time()
+                while time.time() - start_time < 10:  # 最多等待10秒
+                    try:
+                        # 檢查錯誤訊息
+                        error = self.driver.find_element(By.CSS_SELECTOR, ".help-block.with-errors[data-role='validation']")
+                        if error.is_displayed():
+                            self.print_message("考試代碼錯誤", "ERROR")
+                            return False
+                    except NoSuchElementException:
+                        try:
+                            # 檢查題目是否載入
+                            if self.driver.find_element(By.CLASS_NAME, "kques-item").is_displayed():
+                                break
+                        except NoSuchElementException:
+                            pass
+                    time.sleep(0.5)  # 每0.5秒檢查一次
+                else:
+                    self.print_message("載入超時", "ERROR")
+                    return False
+            else:
+                element.click()
+                self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
+                
+            self.exam_page_url = self.driver.current_url
+            self.answer_page_url = self.modify_url(self.exam_page_url)
+            self.print_message(f"已獲取考試頁面URL", "SUCCESS")
+            return True
+        
+        except Exception as e:
+            self.print_message(f"提取URL時發生錯誤: {str(e)}", "ERROR")
+            return False
+        
+    def extract_exam_and_answer_urls_without_exam_code(self):
         try:
             self.print_message("開始提取考試和答案頁面URL", "INFO")
             element = self.wait.until(EC.element_to_be_clickable(
@@ -146,6 +202,66 @@ class FlipclassExamBot:
         except Exception as e:
             self.print_message(f"提取URL時發生錯誤: {str(e)}", "ERROR")
             return False
+        
+    def analyze_exam_url(self, url):
+        """簡單檢查URL是否包含所需元素"""
+        try:
+            # 檢查必要的參數是否存在
+            required_params = ['key', 'redirKey', 'examID', 'ownerID', 'userID']
+            
+            for param in required_params:
+                if param not in url:
+                    self.print_message(f"URL缺少必要參數: {param}", "ERROR")
+                    return False
+                    
+            # 檢查URL是否包含考試路徑
+            if '/kexam/' not in url:
+                self.print_message("URL結構錯誤: 不是考試頁面", "ERROR")
+                return False
+                
+            self.print_message("URL檢查通過", "SUCCESS")
+            return True
+            
+        except Exception as e:
+            self.print_message(f"URL檢查錯誤: {str(e)}", "ERROR")
+            return False
+
+    def execute_in_new_tab(self, url, js_script):
+        """在新分頁執行JS並返回結果"""
+        try:
+            # 保存當前分頁
+            current_handle = self.driver.current_window_handle
+            
+            # 開啟新分頁
+            self.driver.execute_script("window.open('');")
+            new_handle = self.driver.window_handles[-1]
+            
+            # 切換到新分頁
+            self.driver.switch_to.window(new_handle)
+            
+            # 載入答案頁面
+            self.driver.get(url)
+            
+            # 等待頁面載入
+            self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
+            
+            # 執行JS獲取答案
+            result = self.driver.execute_script(js_script)
+            
+            # 關閉新分頁
+            self.driver.close()
+            
+            # 切回原分頁
+            self.driver.switch_to.window(current_handle)
+            
+            return result
+            
+        except Exception as e:
+            self.print_message(f"在新分頁執行操作時發生錯誤: {str(e)}", "ERROR")
+            # 確保回到原分頁
+            if current_handle in self.driver.window_handles:
+                self.driver.switch_to.window(current_handle)
+            return None
 
     def load_exam_page(self):
         if self.exam_page_url:
@@ -204,15 +320,21 @@ class FlipclassExamBot:
     def extract_answers(self):
         try:
             self.print_message("開始提取答案...", "INFO")
-            js_file_path = "extract_answers.js"
-            with open(js_file_path, "r", encoding="utf-8") as js_file:
+            
+            # 讀取JS檔案
+            with open("extract_answers.js", "r", encoding="utf-8") as js_file:
                 js_script = js_file.read()
-                result = self.driver.execute_script(js_script)
-                if result:
-                    self.print_message("答案提取成功", "SUCCESS")
-                else:
-                    self.print_message("未能提取到答案", "WARNING")
-                return result
+            
+            # 在新分頁執行並獲取答案
+            result = self.execute_in_new_tab(self.answer_page_url, js_script)
+            print(result)
+            if result:
+                self.print_message("答案提取成功", "SUCCESS")
+            else:
+                self.print_message("未能提取到答案", "WARNING")
+            
+            return result
+            
         except Exception as e:
             self.print_message(f"提取答案時發生錯誤: {str(e)}", "ERROR")
             return None
@@ -261,8 +383,8 @@ class FlipclassExamBot:
             self.print_message("已點擊提交按鈕", "SUCCESS")
 
             confirm_button = self.wait.until(EC.element_to_be_clickable(
-                (By.XPATH, "//button[@data-bb-handler='confirm' and text()='交卷']")
-            ))
+            (By.CSS_SELECTOR, "button.btn.btn-primary[data-bb-handler='confirm']")
+        ))
             confirm_button.click()
             self.print_message("已確認提交", "SUCCESS")
 
@@ -308,46 +430,61 @@ class FlipclassExamBot:
                 return False
 
             self.navigate_to_course()
-            
-            if not self.extract_exam_and_answer_urls():
-                self.print_message("無法提取測驗URL，停止執行", "ERROR")
-                return False
 
-            # 進入答案頁面
-            self.driver.get(self.answer_page_url)
-            self.print_message("已進入答案頁面", "SUCCESS")
+            if self.exam_code is not None:   
+                print("exam_code is not None")         
+                if not self.extract_exam_and_answer_urls_with_exam_code():
+                    self.print_message("無法提取測驗URL，停止執行", "ERROR")
+                    return False
 
-            # 等待答案頁面加載
-            try:
-                self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
-            except Exception as e:
-                self.print_message("答案頁面加載超時", "ERROR")
-                return False
+                # 提取答案 (現在我們已經在考試頁面上了)
+                answers = self.extract_answers()
+                if not answers:
+                    self.print_message("未能提取答案，停止執行", "ERROR")
+                    return False
+            else:
+                print("exam_code is None")
+                if not self.extract_exam_and_answer_urls_without_exam_code():
+                    self.print_message("無法提取測驗URL，停止執行", "ERROR")
+                    return False
 
-            # 提取答案
-            answers = self.extract_answers()
-            if not answers:
-                self.print_message("未能提取答案，停止執行", "ERROR")
-                return False
+                # 進入答案頁面
+                self.driver.get(self.answer_page_url)
+                self.print_message("已進入答案頁面", "SUCCESS")
 
-            # 回到考試頁面
-            self.load_exam_page()
+                # 等待答案頁面加載
+                try:
+                    self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
+                except Exception as e:
+                    self.print_message("答案頁面加載超時", "ERROR")
+                    return False
 
-            # 等待考試頁面加載
-            try:
-                self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
-            except Exception as e:
-                self.print_message("考試頁面加載超時", "ERROR")
-                return False
+                # 提取答案
+                answers = self.extract_answers()
+                if not answers:
+                    self.print_message("未能提取答案，停止執行", "ERROR")
+                    return False
 
-            # 填充答案並提交
+                # 回到考試頁面
+                self.load_exam_page()
+
+                # 等待考試頁面加載
+                try:
+                    self.wait.until(EC.presence_of_element_located((By.CLASS_NAME, "kques-item")))
+                except Exception as e:
+                    self.print_message("考試頁面加載超時", "ERROR")
+                    return False
+
+            # 填充答案並提交 (不需要額外載入考試頁面，因為我們一直在那裡)
             self.fill_answers_and_submit(answers)
 
             # 獲取分數
             score, fullmark = self.get_score()
-            
+                
             self.print_message("自動化流程執行完成", "SUCCESS")
             return True
+            
+
 
         except Exception as e:
             self.print_message(f"執行過程中發生錯誤: {str(e)}", "ERROR")
@@ -363,7 +500,7 @@ def validate_account(account):
     return len(account) == 8
 
 if __name__ == "__main__":
-    while True:
+    '''while True:
         # 帳號驗證部分保持不變
         account = input("請輸入您的帳號 (8個字元): ").strip()
         if not validate_account(account):
@@ -430,11 +567,18 @@ if __name__ == "__main__":
         if confirm == 'y':
             break
         print("\n請重新輸入資訊。\n")
-
+'''
+    account = '4B3G0058'
+    password = '5208959ttT'
+    course_id = '26681'
+    answer_time = 0.1
+    target_score = 100
+    exam_code = None
+    headless = False
     try:
         # 創建並運行自動化實例
         print("\n正在啟動自動化程序...")
-        automation = FlipclassExamBot(account, password, course_id, answer_time, target_score, headless)
+        automation = FlipclassExamBot(account, password, course_id, answer_time, target_score, exam_code, headless)
         automation.run()
     except Exception as e:
         print(f"程序執行時發生錯誤: {e}")
